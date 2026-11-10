@@ -1,0 +1,480 @@
+AUTH FLOW - SPLIT BY ROLE
+==========================
+
+USER  → Phone + Twilio OTP (no email/password)
+DRIVER → Email + Password (no OTP)
+
+
+═══════════════════════════════════════════════════════
+USER AUTH (Twilio OTP)
+═══════════════════════════════════════════════════════
+
+ROUTES:
+  POST /api/auth/user/send-otp     → send OTP to phone
+  POST /api/auth/user/verify-otp   → verify OTP → register/login → JWT
+
+FLOW:
+  Step 1: User sends phone number
+    → generate 6-digit OTP
+    → store in Redis: otp:{phone} = OTP (5 min expiry)
+    → send SMS via Twilio
+
+  Step 2: User sends phone + otp + (name, role on first time)
+    → verify OTP from Redis
+    → if user exists → login → return JWT
+    → if user not exists → create user → return JWT
+
+
+─────────────────────────────────────────────────────
+user-validator.js  (src/validators/user-validator.js)
+─────────────────────────────────────────────────────
+
+const { body, validationResult } = require("express-validator");
+
+const sendOtpValidation = [
+    body("phone")
+        .notEmpty().withMessage("Phone number is required")
+        .isMobilePhone().withMessage("Invalid phone number"),
+];
+
+const verifyOtpValidation = [
+    body("phone")
+        .notEmpty().withMessage("Phone number is required")
+        .isMobilePhone().withMessage("Invalid phone number"),
+    body("otp")
+        .notEmpty().withMessage("OTP is required")
+        .isLength({ min: 6, max: 6 }).withMessage("OTP must be 6 digits"),
+    body("name")
+        .optional()
+        .trim()
+        .isLength({ min: 2 }).withMessage("Name must be at least 2 characters"),
+];
+
+const validate = (req, res, next) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+        return res.status(400).json({
+            success: false,
+            errors: errors.array().map((e) => ({ field: e.path, message: e.msg })),
+        });
+    }
+    next();
+};
+
+module.exports = { sendOtpValidation, verifyOtpValidation, validate };
+
+
+─────────────────────────────────────────────────────
+otp-service.js  (src/services/otp-service.js)
+─────────────────────────────────────────────────────
+
+const twilioClient = require("../configs/twilioConfig");
+const { redisClient } = require("../configs/redisConfig");
+const { AppError } = require("../utils/AppError");
+
+const OTP_EXPIRY_SECONDS = 300; // 5 minutes
+
+const generateOTP = () => {
+    return Math.floor(100000 + Math.random() * 900000).toString();
+};
+
+const sendOTP = async (phone) => {
+    const otp = generateOTP();
+
+    await redisClient.setEx(`otp:${phone}`, OTP_EXPIRY_SECONDS, otp);
+
+    await twilioClient.messages.create({
+        body: `Your Uber verification code is: ${otp}. Valid for 5 minutes.`,
+        from: process.env.TWILIO_PHONE_NUMBER,
+        to: phone,
+    });
+
+    return { message: "OTP sent successfully" };
+};
+
+const verifyOTP = async (phone, otp) => {
+    const storedOTP = await redisClient.get(`otp:${phone}`);
+
+    if (!storedOTP) {
+        throw new AppError("OTP expired or not found", 400);
+    }
+    if (storedOTP !== otp) {
+        throw new AppError("Invalid OTP", 400);
+    }
+
+    // delete after use — one time only
+    await redisClient.del(`otp:${phone}`);
+    return true;
+};
+
+module.exports = { sendOTP, verifyOTP };
+
+
+─────────────────────────────────────────────────────
+user-service.js  (src/services/user-service.js)
+─────────────────────────────────────────────────────
+
+const jwt = require("jsonwebtoken");
+const { sendOTP, verifyOTP } = require("./otp-service");
+const { findUserByPhone, createUser } = require("../repositories/user-repository");
+
+const generateToken = (user) => {
+    return jwt.sign(
+        { userId: user._id, phone: user.phone, role: "user" },
+        process.env.JWT_SECRET,
+        { expiresIn: "7d" }
+    );
+};
+
+// Step 1 — send OTP
+const sendOtpService = async ({ phone }) => {
+    return await sendOTP(phone);
+};
+
+// Step 2 — verify OTP → register or login
+const verifyOtpService = async ({ phone, otp, name }) => {
+
+    // 1. Verify OTP
+    await verifyOTP(phone, otp);
+
+    // 2. Check if user exists
+    let user = await findUserByPhone({ phone });
+
+    if (!user) {
+        // New user → register
+        if (!name) {
+            throw new AppError("Name is required for new users", 400);
+        }
+        user = await createUser({ name, phone, role: "user" });
+    }
+
+    // 3. Generate JWT
+    const token = generateToken(user);
+
+    return {
+        isNewUser: !user.createdAt,
+        token,
+        user: { id: user._id, name: user.name, phone: user.phone, role: user.role },
+    };
+};
+
+module.exports = { sendOtpService, verifyOtpService };
+
+
+─────────────────────────────────────────────────────
+user-controller.js  (src/controllers/user-controller.js)
+─────────────────────────────────────────────────────
+
+const { sendOtpService, verifyOtpService } = require("../services/user-service");
+
+// POST /api/auth/user/send-otp
+const sendOtp = async (req, res, next) => {
+    try {
+        const { phone } = req.body;
+        const result = await sendOtpService({ phone });
+        return res.status(200).json({ success: true, message: result.message });
+    } catch (error) {
+        next(error);
+    }
+};
+
+// POST /api/auth/user/verify-otp
+const verifyOtp = async (req, res, next) => {
+    try {
+        const { phone, otp, name } = req.body;
+        const result = await verifyOtpService({ phone, otp, name });
+        return res.status(200).json({
+            success: true,
+            message: result.isNewUser ? "Registered successfully" : "Login successful",
+            token: result.token,
+            user: result.user,
+        });
+    } catch (error) {
+        next(error);
+    }
+};
+
+module.exports = { sendOtp, verifyOtp };
+
+
+─────────────────────────────────────────────────────
+user-repository.js  (src/repositories/user-repository.js)
+─────────────────────────────────────────────────────
+
+const User = require("../models/user");
+
+const findUserByPhone = async ({ phone }) => {
+    return await User.findOne({ phone, role: "user" });
+};
+
+const createUser = async ({ name, phone, role }) => {
+    const user = new User({ name, phone, role });
+    return await user.save();
+};
+
+module.exports = { findUserByPhone, createUser };
+
+
+═══════════════════════════════════════════════════════
+DRIVER AUTH (Email + Password)
+═══════════════════════════════════════════════════════
+
+ROUTES:
+  POST /api/auth/driver/register   → name, email, password, phone, vehicle info
+  POST /api/auth/driver/login      → email + password → JWT
+
+FLOW:
+  Register:
+    → validate fields
+    → check email not already taken
+    → hash password with bcrypt
+    → save driver to DB
+    → return JWT
+
+  Login:
+    → find driver by email
+    → compare password with bcrypt
+    → return JWT
+
+
+─────────────────────────────────────────────────────
+driver-validator.js  (src/validators/driver-validator.js)
+─────────────────────────────────────────────────────
+
+const { body, validationResult } = require("express-validator");
+
+const driverRegisterValidation = [
+    body("name").trim().notEmpty().withMessage("Name is required")
+        .isLength({ min: 2 }).withMessage("Name must be at least 2 characters"),
+    body("email").trim().notEmpty().withMessage("Email is required")
+        .isEmail().withMessage("Invalid email format").normalizeEmail(),
+    body("password").notEmpty().withMessage("Password is required")
+        .isLength({ min: 6 }).withMessage("Password must be at least 6 characters"),
+    body("phone").notEmpty().withMessage("Phone is required")
+        .isMobilePhone().withMessage("Invalid phone number"),
+    body("vehicleType").notEmpty().withMessage("Vehicle type is required")
+        .isIn(["auto", "moto", "car"]).withMessage("Vehicle type must be auto, moto or car"),
+    body("vehicleNumber").notEmpty().withMessage("Vehicle number is required"),
+];
+
+const driverLoginValidation = [
+    body("email").trim().notEmpty().withMessage("Email is required")
+        .isEmail().withMessage("Invalid email format").normalizeEmail(),
+    body("password").notEmpty().withMessage("Password is required"),
+];
+
+const validate = (req, res, next) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+        return res.status(400).json({
+            success: false,
+            errors: errors.array().map((e) => ({ field: e.path, message: e.msg })),
+        });
+    }
+    next();
+};
+
+module.exports = { driverRegisterValidation, driverLoginValidation, validate };
+
+
+─────────────────────────────────────────────────────
+driver-service.js  (src/services/driver-service.js)
+─────────────────────────────────────────────────────
+
+const bcrypt = require("bcryptjs");
+const jwt = require("jsonwebtoken");
+const { findDriverByEmail, createDriver } = require("../repositories/driver-repository");
+const { ValidationError, UnauthorizedError } = require("../utils/AppError");
+
+const generateToken = (driver) => {
+    return jwt.sign(
+        { userId: driver._id, email: driver.email, role: "driver" },
+        process.env.JWT_SECRET,
+        { expiresIn: "7d" }
+    );
+};
+
+const driverRegisterService = async ({ name, email, password, phone, vehicleType, vehicleNumber }) => {
+
+    // 1. Check email exists
+    const existing = await findDriverByEmail({ email });
+    if (existing) {
+        throw new ValidationError([{ field: "email", message: "Email already registered" }]);
+    }
+
+    // 2. Hash password
+    const hashedPassword = await bcrypt.hash(password, 10);
+
+    // 3. Create driver
+    const driver = await createDriver({ name, email, password: hashedPassword, phone, vehicleType, vehicleNumber });
+
+    // 4. Generate JWT
+    const token = generateToken(driver);
+
+    return {
+        token,
+        driver: { id: driver._id, name: driver.name, email: driver.email, phone: driver.phone, vehicleType: driver.vehicleType },
+    };
+};
+
+const driverLoginService = async ({ email, password }) => {
+
+    // 1. Find driver
+    const driver = await findDriverByEmail({ email });
+    if (!driver) {
+        throw new UnauthorizedError("Invalid email or password");
+    }
+
+    // 2. Compare password
+    const isMatch = await bcrypt.compare(password, driver.password);
+    if (!isMatch) {
+        throw new UnauthorizedError("Invalid email or password");
+    }
+
+    // 3. Generate JWT
+    const token = generateToken(driver);
+
+    return {
+        token,
+        driver: { id: driver._id, name: driver.name, email: driver.email, phone: driver.phone, vehicleType: driver.vehicleType },
+    };
+};
+
+module.exports = { driverRegisterService, driverLoginService };
+
+
+─────────────────────────────────────────────────────
+driver-controller.js  (src/controllers/driver-controller.js)
+─────────────────────────────────────────────────────
+
+const { driverRegisterService, driverLoginService } = require("../services/driver-service");
+
+// POST /api/auth/driver/register
+const driverRegister = async (req, res, next) => {
+    try {
+        const { name, email, password, phone, vehicleType, vehicleNumber } = req.body;
+        const result = await driverRegisterService({ name, email, password, phone, vehicleType, vehicleNumber });
+        return res.status(201).json({
+            success: true,
+            message: "Driver registered successfully",
+            token: result.token,
+            driver: result.driver,
+        });
+    } catch (error) {
+        next(error);
+    }
+};
+
+// POST /api/auth/driver/login
+const driverLogin = async (req, res, next) => {
+    try {
+        const { email, password } = req.body;
+        const result = await driverLoginService({ email, password });
+        return res.status(200).json({
+            success: true,
+            message: "Login successful",
+            token: result.token,
+            driver: result.driver,
+        });
+    } catch (error) {
+        next(error);
+    }
+};
+
+module.exports = { driverRegister, driverLogin };
+
+
+─────────────────────────────────────────────────────
+driver-repository.js  (src/repositories/driver-repository.js)
+─────────────────────────────────────────────────────
+
+const Driver = require("../models/driver");
+
+const findDriverByEmail = async ({ email }) => {
+    return await Driver.findOne({ email });
+};
+
+const createDriver = async ({ name, email, password, phone, vehicleType, vehicleNumber }) => {
+    const driver = new Driver({ name, email, password, phone, vehicleType, vehicleNumber });
+    return await driver.save();
+};
+
+module.exports = { findDriverByEmail, createDriver };
+
+
+─────────────────────────────────────────────────────
+driver.js model  (src/models/driver.js)
+─────────────────────────────────────────────────────
+
+const mongoose = require("mongoose");
+
+const driverSchema = new mongoose.Schema({
+    name:          { type: String, required: true },
+    email:         { type: String, required: true, unique: true },
+    password:      { type: String, required: true },
+    phone:         { type: String, required: true, unique: true },
+    vehicleType:   { type: String, enum: ["auto", "moto", "car"], required: true },
+    vehicleNumber: { type: String, required: true, unique: true },
+    isAvailable:   { type: Boolean, default: false },
+    location: {
+        type: { type: String, enum: ["Point"], default: "Point" },
+        coordinates: { type: [Number], default: [0, 0] },
+    },
+}, { timestamps: true });
+
+driverSchema.index({ location: "2dsphere" });
+
+module.exports = mongoose.model("Driver", driverSchema);
+
+
+─────────────────────────────────────────────────────
+user.js model  (src/models/user.js)  — updated
+─────────────────────────────────────────────────────
+
+const mongoose = require("mongoose");
+
+const userSchema = new mongoose.Schema({
+    name:  { type: String, required: true },
+    phone: { type: String, required: true, unique: true },
+    role:  { type: String, enum: ["user"], default: "user" },
+}, { timestamps: true });
+
+module.exports = mongoose.model("User", userSchema);
+
+// Note: no email/password for user — phone OTP only
+
+
+─────────────────────────────────────────────────────
+auth-routes.js  (src/routes/auth-routes.js)  — updated
+─────────────────────────────────────────────────────
+
+const { Router } = require("express");
+const { sendOtp, verifyOtp } = require("../controllers/user-controller");
+const { driverRegister, driverLogin } = require("../controllers/driver-controller");
+const { sendOtpValidation, verifyOtpValidation, validate: userValidate } = require("../validators/user-validator");
+const { driverRegisterValidation, driverLoginValidation, validate: driverValidate } = require("../validators/driver-validator");
+
+const authRouter = Router();
+
+// User routes (OTP)
+authRouter.post("/user/send-otp",   sendOtpValidation,   userValidate,   sendOtp);
+authRouter.post("/user/verify-otp", verifyOtpValidation, userValidate,   verifyOtp);
+
+// Driver routes (email + password)
+authRouter.post("/driver/register", driverRegisterValidation, driverValidate, driverRegister);
+authRouter.post("/driver/login",    driverLoginValidation,    driverValidate, driverLogin);
+
+module.exports = authRouter;
+
+
+─────────────────────────────────────────────────────
+.env variables needed
+─────────────────────────────────────────────────────
+
+TWILIO_ACCOUNT_SID=ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+TWILIO_AUTH_TOKEN=your_auth_token
+TWILIO_PHONE_NUMBER=+1XXXXXXXXXX
+REDIS_URL=redis://localhost:6379
+JWT_SECRET=your_jwt_secret
+MONGODB_URI=your_mongodb_uri
+PORT=5000

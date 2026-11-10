@@ -55,10 +55,12 @@ The server starts at `http://localhost:8080` (or the port set in `.env`).
 
 ## API Endpoints
 
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/` | Health check — returns a welcome message |
-| GET | `/api/ping` | Ping endpoint — returns `{ success: true, message: "pong" }` |
+### General
+
+| Method | Path | Description | Response |
+|--------|------|-------------|----------|
+| GET | `/` | Home — returns a welcome message | `{ success: true, message: "Welcome to Uber Backend API" }` |
+| GET | `/api/ping` | Health check ping | `{ success: true, message: "pong" }` |
 
 ---
 
