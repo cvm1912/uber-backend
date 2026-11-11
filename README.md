@@ -93,6 +93,48 @@ monolithic-starter/
 
 ---
 
+## Data Models
+
+### rider Model
+
+| Field | Type | Required | Default | Purpose |
+|---|---|---|---|---|
+| `countryCode` | String | Yes | — | Country dialing code |
+| `phone` | String | Yes | — | Phone number |
+| `isPhoneVerified` | Boolean | No | `false` | OTP verification status |
+| `firstName` | String | No | `null` | First name (2–50 chars) |
+| `lastName` | String | No | `null` | Last name (max 50 chars) |
+| `isAdult` | Boolean | No | `null` | Age confirmation |
+| `profilePicture` | String | No | `null` | Profile picture URL |
+| `gender` | String | No | `null` | `male`, `female`, or `other` |
+| `email` | String | No | `null` | Email address (lowercase) |
+| `language` | String | No | `"en"` | Preferred language |
+| `isProfileCompleted` | Boolean | No | `false` | Profile completion status |
+| `isActive` | Boolean | No | `true` | Account active/inactive |
+| `createdAt` | Date | Auto | — | Account creation date |
+| `updatedAt` | Date | Auto | — | Last update |
+
+
+### Driver Model
+
+| Field | Type | Purpose |
+|---|---|---|
+| `name` | String | Driver's full name |
+| `email` | String | Login email |
+| `password` | String | Hashed password |
+| `phone` | String | Contact number |
+| `profileImage` | String | Profile picture |
+| `isEmailVerified` | Boolean | Email verification |
+| `isPhoneVerified` | Boolean | Phone verification |
+| `isActive` | Boolean | Account status |
+| `isApproved` | Boolean | Admin approval |
+| `vehicle` | ObjectId | Reference to vehicle |
+| `licenseNumber` | String | Driving licence number |
+| `createdAt` | Date | Account creation |
+| `updatedAt` | Date | Last update |
+
+---
+
 ## Error Handling
 
 Custom error classes are defined in `src/utils/AppError.js`:
