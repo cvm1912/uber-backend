@@ -2,13 +2,14 @@ const express = require('express');
 const dotenv = require('dotenv')
 const cors = require('cors');
 
+// Load environment variables first so configs can read them
+dotenv.config();
+
 //imports 
 const connectDatabase = require('./src/configs/dbConfig');
 const logger = require('./src/configs/loggerConfig');
 const pingRouter = require('./src/routes/ping-routes');
 
-// Load environment variables
-dotenv.config();
 
 // Initialize Express application
 const app = express();
@@ -29,12 +30,15 @@ app.get("/", (req, res) => {
     });
 });
 
-// Connect to database
-connectDatabase();
-
-// Start Express server
+// Connect to database then start server
 const PORT = process.env.PORT || 5000;
 
-app.listen(PORT, () => {
+const startServer = async () => {
+  await connectDatabase();
+
+  app.listen(PORT, () => {
     logger.info(`Server is running on port http://localhost:${PORT}`);
-});
+  });
+};
+
+startServer();
