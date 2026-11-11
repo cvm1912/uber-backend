@@ -62,18 +62,7 @@ The server starts at `http://localhost:8080` (or the port set in `.env`).
 | GET | `/` | Home — returns a welcome message | `{ success: true, message: "Welcome to Uber Backend API" }` |
 | GET | `/api/ping` | Health check ping | `{ success: true, message: "pong" }` |
 
-### Rider Routes
 
-Registration is a multi-step flow. Each step must be completed in order.
-
-| Step | Method | Path | Description |
-|------|--------|------|-------------|
-| 1 | POST | `/api/users/send-otp` | User enters country code (e.g. `+91`) and phone number — OTP is sent |
-| 2 | POST | `/api/users/verify-otp` | User submits OTP — sets `isPhoneVerified = true` on success |
-| 3 | POST | `/api/users/complete-profile` | User provides first name, last name, and 18+ confirmation |
-| 4 | PATCH | `/api/users/profile` | User optionally adds profile picture, gender, email, and language |
-
----
 
 ## Project Structure
 
@@ -104,47 +93,6 @@ monolithic-starter/
 
 ---
 
-## Data Models
-
-### User Model
-
-| Field | Type | Required | Default | Purpose |
-|---|---|---|---|---|
-| `countryCode` | String | Yes | — | Country dialing code |
-| `phone` | String | Yes | — | Phone number |
-| `isPhoneVerified` | Boolean | No | `false` | OTP verification status |
-| `firstName` | String | No | `null` | First name (2–50 chars) |
-| `lastName` | String | No | `null` | Last name (max 50 chars) |
-| `isAdult` | Boolean | No | `null` | Age confirmation |
-| `profilePicture` | String | No | `null` | Profile picture URL |
-| `gender` | String | No | `null` | `male`, `female`, or `other` |
-| `email` | String | No | `null` | Email address (lowercase) |
-| `language` | String | No | `"en"` | Preferred language |
-| `isProfileCompleted` | Boolean | No | `false` | Profile completion status |
-| `isActive` | Boolean | No | `true` | Account active/inactive |
-| `createdAt` | Date | Auto | — | Account creation date |
-| `updatedAt` | Date | Auto | — | Last update |
-
-
-### Driver Model
-
-| Field | Type | Purpose |
-|---|---|---|
-| `name` | String | Driver's full name |
-| `email` | String | Login email |
-| `password` | String | Hashed password |
-| `phone` | String | Contact number |
-| `profileImage` | String | Profile picture |
-| `isEmailVerified` | Boolean | Email verification |
-| `isPhoneVerified` | Boolean | Phone verification |
-| `isActive` | Boolean | Account status |
-| `isApproved` | Boolean | Admin approval |
-| `vehicle` | ObjectId | Reference to vehicle |
-| `licenseNumber` | String | Driving licence number |
-| `createdAt` | Date | Account creation |
-| `updatedAt` | Date | Last update |
-
----
 
 ## Error Handling
 
